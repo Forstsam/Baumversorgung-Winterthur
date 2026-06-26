@@ -1081,3 +1081,30 @@ Welche Kombination aus Nachpflanzungsrate, Ersatzstrategie, Klimaannahme, TreeGO
 ```
 
 Die zentrale Stärke des Modells ist nicht ein einzelnes Ergebnis, sondern der Vergleich vieler plausibler Szenarien mit Unsicherheitsbandbreiten.
+
+---
+
+## 24. Interaktives Dashboard
+
+Zusätzlich zum Python-Modell gibt es ein interaktives Dashboard auf Basis von React/Vite. Es dient als Kommunikations- und Explorationsoberfläche für Szenarien der Baumversorgung Winterthur.
+
+Das Dashboard zeigt:
+
+- Entwicklung des Gesamtbestands bis 2126
+- Unsicherheitsband der modellierten Bestandsentwicklung
+- demografische Entwicklung des Baumbestands
+- Baumartenentwicklung nach Szenario und Pflanzstrategie
+- stärkste positive und negative Veränderungen bei Baumarten
+- Herkunftsfilter nach GreenList / Östliches Mittelland
+- Export von PNG, CSV und Szenario-Parametern
+
+Wichtig: Das Dashboard ist eine Visualisierungsebene. Es ersetzt nicht das Python-Monte-Carlo-Modell. Für belastbare finale Resultate sollten die Modelloutputs aus Python verwendet werden, insbesondere:
+
+```text
+total_summary.csv
+total_milestones.csv
+annual_summary.csv
+species_summary.csv
+species_milestones.csv
+run_metadata.csv
+
