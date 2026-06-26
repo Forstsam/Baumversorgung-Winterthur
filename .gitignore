@@ -4,3 +4,6 @@ output/
 *.xlsx
 *.txt
 __pycache__/
+# React/Vite Dashboard
+dashboard/node_modules/
+dashboard/dist/
