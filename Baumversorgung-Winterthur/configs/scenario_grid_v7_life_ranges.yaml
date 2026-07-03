@@ -1,0 +1,35 @@
+script: scripts/winterthur_tree_stochastic_goal_planning_v7.py
+output_root: output/scenario_runs_v7
+batch_name: target17000_life_ranges
+sqlite_path: scenario_results.sqlite
+
+base:
+  kataster: data/2026-04-13_Baumkataster_gesamte_Daten.csv
+  citytrees_scores: data/citytrees2_scores.csv
+  citiesgoer_xlsx: data/CitiesGOER_2050s_ssp126.xlsx
+  treegoer_csv: data/TreeGOER_2023_wide.csv
+  use_proxy_climate: true
+  current_year: 2026
+  years: 100
+  n_runs: 50 #300
+  milestones: [4, 25, 50, 100]
+  target_count: 17000
+  replacement_delay: 2
+  annual_new_trees_start_offset: 1
+  annual_new_trees_end_offset: 4
+  baseline_life_range_csv: data/species_life_ranges.csv
+  life_sampling: triangular
+  life_hazard_reference: 0.0
+  life_hazard_min_multiplier: 0.5
+  life_hazard_max_multiplier: 2.0
+
+grid:
+  annual_new_trees: [250, 300, 350]
+  replacement_rate: [0.8, 1.0]
+  new_tree_initial_age: 10
+  new_tree_strategy: [same_mix, balanced]
+  tree_q: [q95, qrt3]
+  tree_k: [0.08, 0.15]
+  climate_trend_end: [0.25, 0.50]
+  life_uncertainty_mode: [none, per_run]
+  life_hazard_adjustment_weight: [0.0, 0.5]
