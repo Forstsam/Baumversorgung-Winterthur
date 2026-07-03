@@ -1,0 +1,38 @@
+kataster: data/2026-04-13_Baumkataster_gesamte_Daten.csv
+citytrees_scores: data/citytrees2_scores.csv
+citiesgoer_xlsx: data/CitiesGOER_2050s_ssp126.xlsx
+treegoer_csv: data/TreeGOER_2023_wide.csv
+use_proxy_climate: true
+
+out_dir: output/v7_target_17000_life_ranges
+scenario_label: 2050s_SSP126_Target17000_LifeRanges
+current_year: 2026
+years: 100
+n_runs: 50 #300
+milestones: [4, 25, 50, 100]
+random_seed: 42
+
+target_count: 17000
+replacement_rate: 0.9 #0.8
+replacement_delay: 1 #2
+annual_new_trees: 300
+annual_new_trees_start_offset: 1
+annual_new_trees_end_offset: 4
+new_tree_initial_age: 10
+new_tree_strategy: balanced
+
+# TreeGOER / Klimastress
+tree_var: bio05
+tree_q: q95
+tree_k: 0.08
+climate_trend_end: 0.25
+
+# Variante B: Lebensdauer-Bandbreiten beeinflussen die jährliche Hazard.
+# Die Vorlage data/species_life_ranges.csv muss aus data_templates kopiert werden und fachlich angepasst werden.
+baseline_life_range_csv: data/species_life_ranges.csv
+life_sampling: triangular
+life_uncertainty_mode: per_run
+life_hazard_adjustment_weight: 0.5
+life_hazard_reference: 0.0
+life_hazard_min_multiplier: 0.5
+life_hazard_max_multiplier: 2.0
