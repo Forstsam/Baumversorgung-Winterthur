@@ -1,0 +1,9 @@
+:root { color-scheme: light; }
+html, body { margin: 0; padding: 0; }
+#root { min-height: 100vh; }
+/* Die App nutzt nur diese wenigen Utility-Klassen: */
+.flex { display: flex; }
+.items-center { align-items: center; }
+.items-baseline { align-items: baseline; }
+.justify-between { justify-content: space-between; }
+.flex-wrap { flex-wrap: wrap; }
