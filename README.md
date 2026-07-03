@@ -1084,27 +1084,133 @@ Die zentrale Stärke des Modells ist nicht ein einzelnes Ergebnis, sondern der V
 
 ---
 
-## 24. Interaktives Dashboard
+## 24. Baumversorgung Winterthur — Stadtbaum-Modell & Dashboard
 
-Zusätzlich zum Python-Modell gibt es ein interaktives Dashboard auf Basis von React/Vite. Es dient als Kommunikations- und Explorationsoberfläche für Szenarien der Baumversorgung Winterthur.
+Stochastisches Modell und interaktives Dashboard zur Entwicklung des städtischen
+Baumbestands von Winterthur bis 2126. Das Projekt beantwortet zwei Fragen:
+Wird das Ziel von **17'000 Bäumen bis 2030** erreicht — und wie muss gepflanzt
+werden, damit der Bestand auch langfristig gesund bleibt?
 
-Das Dashboard zeigt:
+---
 
-- Entwicklung des Gesamtbestands bis 2126
-- Unsicherheitsband der modellierten Bestandsentwicklung
-- demografische Entwicklung des Baumbestands
-- Baumartenentwicklung nach Szenario und Pflanzstrategie
-- stärkste positive und negative Veränderungen bei Baumarten
-- Herkunftsfilter nach GreenList / Östliches Mittelland
-- Export von PNG, CSV und Szenario-Parametern
+## Interaktives Dashboard
 
-Wichtig: Das Dashboard ist eine Visualisierungsebene. Es ersetzt nicht das Python-Monte-Carlo-Modell. Für belastbare finale Resultate sollten die Modelloutputs aus Python verwendet werden, insbesondere:
+**Live:** https://forstsam.github.io/Baumversorgung-Winterthur/
 
-```text
-total_summary.csv
-total_milestones.csv
-annual_summary.csv
-species_summary.csv
-species_milestones.csv
-run_metadata.csv
+Das Dashboard läuft vollständig im Browser — kein Login, keine Installation.
+Es hat vier Ansichten, alle mit Reglern zum Durchspielen von Szenarien und mit
+Monte-Carlo-Unsicherheitsbändern (Median, 50 %- und 90 %-Bereich):
+
+- **Bestand** — Entwicklung der Gesamtzahl 2026–2126, Zielprüfung 2030, Meilensteine.
+- **Demografie** — Altersstruktur (Alterspyramide) mit Zeitschieber, Medianalter und Erneuerungsquote.
+- **Arten** — Verschiebung der Baumartenzusammensetzung, Zu- und Abnahme je Art.
+- **Pflanzung** — benötigte Neupflanzungen, Pflanzlücke gegenüber dem Ziel.
+
+---
+
+## Wie das Modell rechnet
+
+Kohortenbasierte Monte-Carlo-Simulation. Für jeden Baum wird pro Jahr eine
+Ausfallwahrscheinlichkeit bestimmt:
+
+```
+p_fail = clip( base_p(Alter) · climate_mult · (1 + trend) · Standort^1 · Management^0.6 · life_mult , 0.0001 , 0.50 )
+```
+
+- **base_p(Alter)** — empirisch kalibrierte Alters-Hazard aus dem Kataster
+  (Sterbetafel mit Laplace-Glättung α = 0.5, Mindest-Risikomenge 20, Clip ≤ 0.35;
+  aktive Bäume rechtszensiert). Junge Bäume ~0.3 %, reife ~1.5 %/Jahr.
+- **climate_mult** — TreeGOER-Exceedance: `exp(−tree_k · max(0, Zukunfts-bio05 − bio05-Grenze der Art))`,
+  danach `1/clip(…, 0.2, 2.0)`. Zukunftsklima aus CitiesGOER für Winterthur.
+- **trend** — linearer Klima-Aufschlag über die Zeit (`climate_trend_end`, Default +35 % bis 2126).
+- **life_mult** = `(Referenzlebensdauer / Artlebensdauer)^Gewicht`, gekappt 0.5–2.0.
+- Ausgefallene Bäume werden nach Verzögerung mit `Ersatzrate` ersetzt; neue Bäume
+  starten mit `new_tree_initial_age` (Default 10). Über viele Läufe entstehen die
+  Perzentilbänder.
+
+---
+
+## Datengrundlage
+
+- `2026-04-13_Baumkataster_gesamte_Daten.csv` — 16'621 aktive Bäume; Pflanzjahre (Altersstruktur), Fälldaten (Hazard-Kalibrierung), Arten.
+- `species_life_ranges.csv` — artspezifische Lebensdauer-Bandbreiten.
+- `citytrees2_scores.csv` — CityTrees-II Eignung (Urban/Trockenheit/Hitze), 68.3 % Abdeckung.
+- `TreeGOER_2023_wide.csv` — bio05-Wärmegrenzen je Art, 44.9 % Abdeckung.
+- `CitiesGOER_*.xlsx` — Zukunftsklima Winterthur (SSP1-2.6 / SSP3-7.0 / SSP5-8.5).
+- `GreenList_25_D.xlsx` — Herkunftsklassierung einheimisch / nicht einheimisch.
+
+Nicht erfasste Arten werden neutral behandelt (climate_mult = 1.0).
+
+---
+
+## Zentrale Ergebnisse (Default-Szenario)
+
+- Aus der heutigen Altersstruktur folgen **≈ 135 Fällungen/Jahr** im Basisfall.
+- Mit der geplanten Pflanzung (300 Bäume/Jahr 2027–2030, 80 % Ersatz) wird das
+  **Ziel von 17'000 bis 2030 im Median erreicht** (~17'500).
+- **Ohne fortgesetzte Pflanzung sinkt der Bestand langfristig** (Richtung 12'000–14'000 bis 2126).
+- **Nur mit dauerhafter Pflanzung und guter Anwuchsquote** bleibt der Bestand stabil um 17'000.
+- Unter SSP1-2.6 ist der räumliche `climate_mult ≈ 1.0`; der Klimaeffekt kommt im
+  Default fast ganz aus der `climate_trend`-Annahme. Erst SSP5-8.5 wirkt spürbar stärker.
+
+Alle Werte sind Näherungen zum Erkunden der Hebel, kein Ersatz für den vollständigen
+Einzelbaum-Lauf des Python-Modells.
+
+---
+
+## Python-Modell (Vollversion)
+
+```
+scripts/
+  winterthur_tree_stochastic_goal_planning_v7.py   # Kernmodell (Einzelbaum, 100 Jahre, n Läufe)
+  run_winterthur_scenarios_v7.py                   # Szenario-Runner (Grid, Summary, SQLite)
+configs/
+  base_target_17000_v7_life_ranges.yaml            # Basis-Szenario
+  scenario_grid_v7_life_ranges.yaml                # Szenario-Raster
+data/                                              # Eingabedaten (s. oben)
+```
+
+Einzelnes Szenario:
+
+```bash
+python scripts/winterthur_tree_stochastic_goal_planning_v7.py --config configs/base_target_17000_v7_life_ranges.yaml
+```
+
+Szenario-Raster:
+
+```bash
+python scripts/run_winterthur_scenarios_v7.py --scenario_config configs/scenario_grid_v7_life_ranges.yaml
+```
+
+---
+
+## Dashboard veröffentlichen
+
+Das Dashboard ist eine statische Website. Zwei Wege:
+
+**Einfach (eine Datei):** `index.html` ins Repo laden, dann
+Settings → Pages → Source „Deploy from a branch", Branch `main`, Ordner `/ (root)`.
+Nach 1–2 Minuten live unter der oben genannten Adresse.
+
+**Robust (gebaut):** Vite-Projekt (`package.json`, `vite.config.js`, `src/App.jsx`, …),
+Veröffentlichung per GitHub Actions oder Import bei Netlify/Vercel/Cloudflare Pages.
+Vorteil: kein CDN nötig, schnellerer Start.
+
+Die Klimadaten (TreeGOER, CityTrees-II, CitiesGOER) sind als vorberechnete Werte
+fest im Code hinterlegt — die Website liest die Rohdateien nicht zur Laufzeit.
+Beim Veröffentlichen geht davon nichts verloren.
+
+---
+
+## Grenzen
+
+- Das Dashboard rechnet aggregiert (globale Alterskurve statt je Art einzeln kalibriert).
+- Der räumliche `climate_mult` ist durch die Datenabdeckung gedämpft (TreeGOER 44.9 %).
+- Der langfristige Klimaeffekt hängt stark an der `climate_trend`-Annahme.
+- Für volle Modelltreue sollten langfristig die Ausgaben des Python-Laufs
+  (`species_milestones.csv` u. a.) direkt eingelesen werden.
+
+---
+
+*Modell und Dashboard: Baumversorgung Winterthur. Datenstand Kataster: 13.04.2026.*
 
