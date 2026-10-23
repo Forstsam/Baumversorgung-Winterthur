@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import html2canvas from "html2canvas";
 import { ComposedChart, Area, Line, XAxis, YAxis, ReferenceLine, ReferenceDot, Tooltip, ResponsiveContainer, CartesianGrid, Bar } from "recharts";
 
@@ -4780,6 +4780,7 @@ const DEFAULTS={
   replacementRate:0.8, replacementDelay:2, annualNewTrees:300, newStart:1, newEnd:4, initAge:10,
   strategy:"balanced", lifeHazardWeight:0.5, lifeMode:"per_run",
   nRuns:100, targetCount:17000, seed:42, viewYearOff:24,
+  plantGoalCount:18000, plantGoalYearOff:24, establishmentRate:0.85, plannedPlantingAnnual:500,
 };
 const PRESETS={
   konservativ:{annualNewTrees:250,strategy:"balanced",replacementRate:0.8},
@@ -4869,6 +4870,8 @@ function simulateSpecies(p,det){
   const baseSum=SPECIES_BASE.reduce((a,b)=>a+b.count,0)||1;
   let counts=SPECIES_BASE.map(sp=>sp.count*p.N0/baseSum);
   const history=[counts.slice()];
+  // Jahresflüsse je Baumart als Basis für die optionale Altersklassen-Projektion.
+  const lossFlows=[null], plantFlows=[null];
   for(let t=1;t<=YEARS;t++){
     const lossTotal=det.deaths[t]||0;
     const lossWeights=counts.map((c,i)=>{const fit=speciesClimateFit(SPECIES_BASE[i],p.scenario);return c*Math.max(0.2,SPECIES_BASE[i].risk)*(1+(1-fit)*p.climateTrendEnd*(t/YEARS));});
@@ -4879,6 +4882,8 @@ function simulateSpecies(p,det){
     const plant=repl+extra;
     const plantWeights=SPECIES_BASE.map(sp=>strategyWeight(sp,p.strategy,p.scenario));
     const pwSum=plantWeights.reduce((a,b)=>a+b,0)||1;
+    lossFlows.push(counts.map((c,i)=>Math.max(0,c-after[i])));
+    plantFlows.push(plantWeights.map(w=>plant*w/pwSum));
     counts=after.map((c,i)=>c+plant*plantWeights[i]/pwSum);
     history.push(counts.slice());
   }
@@ -4920,7 +4925,7 @@ function simulateSpecies(p,det){
     avgAge:r.avgAge ?? "–",
     life:r.life ?? "–",
   }));
-  return {rows,chart,trend,top5Share,climateFitShare,shannon};
+  return {rows,chart,trend,top5Share,climateFitShare,shannon,lossFlows,plantFlows};
 }
 
 const fmt=n=>Math.round(n).toLocaleString("de-CH").replace(/,/g,"\u2019");
@@ -4985,6 +4990,243 @@ function Pyramid({classOld,classNew}){
     <div className="flex items-center" style={{gap:8,marginBottom:4}}>
       <div style={{width:54,textAlign:"right",fontSize:10,color:MOSS_DIM,letterSpacing:1}}>ALTER</div>
       <div style={{flex:1,fontSize:10,color:MOSS_DIM,letterSpacing:1}}>ANZAHL BÄUME →</div><div style={{width:48}}/></div></div>);
+}
+
+
+/* ───────── Altersziel / stadtbaumspezifischer Normalwald-Vergleich ─────────
+   Eine klassische Normalwaldverteilung (gleiche Altersklassen) wird explizit
+   nur als theoretischer Vergleich angezeigt. Standard ist eine stationäre
+   Überlebensverteilung bei laufender Nachpflanzung (modellabhängige Referenz).
+   Für einzelne Arten verwenden wir nur explizit importierte Altersdaten,
+   KEINE aus dem Durchschnittsalter erfundenen Jahrgänge. */
+
+const AGE_BUCKETS=18;
+const AGE_LABELS=Array.from({length:AGE_BUCKETS},(_,i)=>i===17?"170+":`${i*10}–${i*10+9}`);
+function aggregateAge(hist){
+  const out=Array(AGE_BUCKETS).fill(0);
+  for(let a=0;a<hist.length;a++)out[Math.min(AGE_BUCKETS-1,Math.floor(a/10))]+=Math.max(0,Number(hist[a])||0);
+  return out;
+}
+function normalizeAge(a){
+  const sum=a.reduce((n,x)=>n+Math.max(0,x),0);
+  return a.map(x=>sum?Math.max(0,x)/sum:0);
+}
+function ageReference(mode,lifespan,risk=1){
+  const life=Math.max(30,Math.min(190,Number(lifespan)||120));
+  const age=Array(MAXAGE).fill(0);
+  if(mode==="equal"){
+    // Im klassischen Normalwald pro gleich breite Altersklasse gleich viele Bäume.
+    for(let a=0;a<MAXAGE;a++)age[a]=(a<life)?1:0;
+  }else{
+    // Stationäre Altersstruktur einer ständig nachgepflanzten Kohorte.
+    // Zusätzlicher Lebensdauerterm ist eine illustrative Modellannahme,
+    // keine kalibrierte artspezifische Sterbetafel.
+    age[0]=1;
+    for(let a=1;a<MAXAGE;a++){
+      const base=(HAZARD[Math.min(MAXAGE-1,a-1)]||0.01)*Math.max(.35,Math.min(2.5,risk));
+      const senior=.075*Math.pow((a-1)/life,5);
+      const fail=Math.min(.60,Math.max(0,base+senior));
+      age[a]=age[a-1]*(1-fail);
+    }
+  }
+  return normalizeAge(aggregateAge(age));
+}
+function targetSimilarity(distribution,reference){
+  const a=normalizeAge(distribution);
+  return Math.max(0,100*(1-.5*a.reduce((sum,x,i)=>sum+Math.abs(x-reference[i]),0)));
+}
+function histFromAggregate(det,y){
+  return det.classOld[y].map((n,i)=>n+det.classNew[y][i]);
+}
+function projectSpeciesCohorts(baseAges, speciesIndex, speciesForecast, params){
+  if(!Array.isArray(baseAges)||baseAges.length===0||speciesIndex<0)return null;
+  const years=[];
+  const arr=Array(MAXAGE).fill(0);
+  for(let i=0;i<Math.min(baseAges.length,MAXAGE);i++)arr[i]=Math.max(0,Number(baseAges[i])||0);
+  const initialSum=arr.reduce((a,b)=>a+b,0);
+  if(!initialSum)return null;
+  const matched=SPECIES_BASE[speciesIndex];
+  const multiplier=matched.count/initialSum;
+  for(let a=0;a<MAXAGE;a++)arr[a]*=multiplier;
+  years.push(aggregateAge(arr));
+  for(let y=1;y<=YEARS;y++){
+    let deathGoal=speciesForecast.lossFlows[y]?.[speciesIndex]||0;
+    const planted=speciesForecast.plantFlows[y]?.[speciesIndex]||0;
+    const agesNext=Array(MAXAGE).fill(0);
+    // Tatsächliche Modell-Verluste der Art werden nach der Alters-Hazard
+    // proportional auf die lebenden Alterskohorten verteilt.
+    const risks=arr.map((n,a)=>n*Math.max(0.0001,HAZARD[a]||0.008));
+    const weights=risks.reduce((a,b)=>a+b,0)||1;
+    let pending=deathGoal;
+    let active=risks.map((_,i)=>i);
+    const losses=Array(MAXAGE).fill(0);
+    for(let pass=0;pass<3&&pending>1e-7;pass++){
+      const denom=active.reduce((n,i)=>n+risks[i],0)||1;
+      let removed=0;
+      for(const i of active){
+        const v=Math.min(arr[i]-losses[i],pending*risks[i]/denom);
+        losses[i]+=v;removed+=v;
+      }
+      pending-=removed;
+      active=active.filter(i=>arr[i]-losses[i]>1e-8);
+      if(!active.length)break;
+    }
+    for(let a=0;a<MAXAGE;a++){
+      const remain=Math.max(0,arr[a]-losses[a]);
+      agesNext[Math.min(MAXAGE-1,a+1)]+=remain;
+    }
+    agesNext[Math.min(MAXAGE-1,Math.max(0,params.initAge))]+=planted;
+    for(let a=0;a<MAXAGE;a++)arr[a]=agesNext[a];
+    years.push(aggregateAge(arr));
+  }
+  return years;
+}
+function parseRawTreeCSV(text){
+  const firstLine=text.split(/\r?\n/,1)[0]||"";
+  const candidates=[";","\t",","];
+  const sep=candidates.sort((a,b)=>firstLine.split(b).length-firstLine.split(a).length)[0];
+  const records=[];
+  let row=[],field="",inQuotes=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){
+      if(inQuotes&&text[i+1]==='"'){field+='"';i++;}else inQuotes=!inQuotes;
+    }else if(c===sep&&!inQuotes){row.push(field);field="";}
+    else if((c==='\n'||c==='\r')&&!inQuotes){
+      if(c==='\r'&&text[i+1]==='\n')i++;
+      row.push(field);field="";
+      if(row.length>1||row[0])records.push(row);
+      row=[];
+    }else field+=c;
+  }
+  row.push(field);if(row.length>1||row[0])records.push(row);
+  if(!records.length)throw Error("CSV ist leer");
+  const h=records.shift().map(x=>x.replace(/^\uFEFF/,"").trim().toUpperCase());
+  const get=(names)=>names.map(n=>h.indexOf(n)).find(i=>i>=0)??-1;
+  const speciesCol=get(["BAUMART_L","BAUMART_LAT","BAUMART_LATIN","BAUMART_WISS","WISS_NAME"]);
+  const plantCol=get(["PFLANZJAHR","PFLANZ_JAHR","PFLANZDATUM"]);
+  const ageCol=get(["ALTER","BAUMALTER"]);
+  const fallCol=get(["FALLDATUM","FAELLDATUM","FÄLLDATUM"]);
+  const statusCol=get(["BAUMSTATUS","STATUS"]);
+  if(speciesCol<0||plantCol<0&&ageCol<0)throw Error("Benötigt BAUMART_L und PFLANZJAHR (oder ALTER). Erkannte Spalten: "+h.slice(0,15).join(", "));
+  const species={}; let total=0,withoutAge=0,excluded=0;
+  for(const r of records){
+    if(fallCol>=0&&String(r[fallCol]||"").trim()){excluded++;continue;}
+    if(statusCol>=0&&/gefäll|gefaell|entfern|abgang|inaktiv|gelöscht|geloescht/i.test(String(r[statusCol]||""))){excluded++;continue;}
+    const name=speciesCore(String(r[speciesCol]||""));
+    if(!name)continue;
+    let age=null;
+    if(plantCol>=0){
+      const raw=String(r[plantCol]||"").trim();
+      const match=raw.match(/(?:18|19|20)\d{2}/);
+      if(match)age=CURRENT_YEAR-Number(match[0]);
+    }
+    if(age===null&&ageCol>=0){const n=Number(String(r[ageCol]||"").replace(",","."));if(Number.isFinite(n))age=n;}
+    if(age===null||!Number.isFinite(age)||age<0||age>=MAXAGE){withoutAge++;continue;}
+    if(!species[name])species[name]=Array(MAXAGE).fill(0);
+    species[name][Math.floor(age)]++; total++;
+  }
+  if(!total)throw Error("Keine gültigen Arten mit Pflanzjahr gefunden.");
+  return {version:1,baseYear:CURRENT_YEAR,totalWithAge:total,withoutAge,excluded,source:"lokal aggregierter Baumkataster",species};
+}
+function downloadAgeJSON(profile){
+  const blob=new Blob([JSON.stringify(profile)],{type:"application/json"});
+  const url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download="species_age_2026.json";link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function AgeReferencePanel({params,det,forecast,cohorts,onUpload}){
+  const [speciesName,setSpeciesName]=useState("all");
+  const [mode,setMode]=useState("survival");
+  const [life,setLife]=useState(120);
+  const [kind,setKind]=useState("species");
+  const [search,setSearch]=useState("");
+  const candidates=useMemo(()=>SPECIES_BASE.filter(s=>s.label.toLowerCase().includes(search.toLowerCase())||s.name.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>b.count-a.count),[search]);
+  const sp=SPECIES_BASE.find(s=>s.name===speciesName);
+  const idx=sp?SPECIES_BASE.indexOf(sp):-1;
+  const exactAges=sp?(cohorts?.species?.[speciesCore(sp.name)]||cohorts?.species?.[sp.name]||null):null;
+  const years=useMemo(()=>{
+    if(speciesName==="all")return Array.from({length:YEARS+1},(_,i)=>histFromAggregate(det,i));
+    if(!exactAges)return null;
+    return projectSpeciesCohorts(exactAges,idx,forecast,params);
+  },[speciesName,exactAges,idx,forecast,params,det]);
+  const refLife=sp&&kind==="species"?Math.max(40,Math.round(sp.life||life)):life;
+  const ref=useMemo(()=>ageReference(mode,refLife,sp?.risk||1),[mode,refLife,sp]);
+  const chart=years?AGE_LABELS.map((lab,i)=>({
+    klasse:lab,
+    "2026":+(normalizeAge(years[0])[i]*100).toFixed(2),
+    Zieljahr:+(normalizeAge(years[params.viewYearOff])[i]*100).toFixed(2),
+    Referenz:+(ref[i]*100).toFixed(2),
+  })):[];
+  const score=years?years.map(h=>targetSimilarity(h,ref)):[];
+  const now=score[0]??null,future=score[params.viewYearOff]??null;
+  const direction=future===null?0:future-now;
+  const timeline=score.map((v,i)=>({jahr:CURRENT_YEAR+i,naehe:+v.toFixed(2)}));
+  const uiStyle={padding:"6px 9px",border:`1px solid ${LINE_GRID}`,borderRadius:8,background:"#fff",color:PAPER,fontSize:12};
+  return(<div style={{marginTop:16,background:PANEL,border:`1px solid ${LINE_GRID}`,borderRadius:16,padding:"18px 20px"}}>
+    <div style={{fontSize:15,fontWeight:700,color:PAPER,marginBottom:5}}>Altersklassen im Vergleich zum Zielbild</div>
+    <div style={{fontSize:12,color:TEXT_MUTE,lineHeight:1.55,marginBottom:14}}>Die gestrichelte Linie ist eine <b>Referenzverteilung</b>, keine Prognose. Wähle eine Baumart und ein Zieljahr, um zu sehen, ob sich ihre Altersstruktur annähert.</div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:12}}>
+      <label style={{flex:"1 1 220px",fontSize:11,color:SAGE}}>Baumart
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Baumart suchen …" style={{...uiStyle,display:"block",width:"100%",margin:"4px 0"}}/>
+        <select value={speciesName} onChange={e=>{setSpeciesName(e.target.value);setSearch("");}} style={{...uiStyle,width:"100%"}}>
+          <option value="all">Gesamter Baumbestand</option>
+          {(!candidates.some(s=>s.name===speciesName)&&sp?[sp,...candidates]:candidates).map(s=><option key={s.name} value={s.name}>{s.label} ({fmt(s.count)})</option>)}
+        </select>
+      </label>
+      <label style={{flex:"1 1 150px",fontSize:11,color:SAGE}}>Zielverteilung
+        <select value={mode} onChange={e=>setMode(e.target.value)} style={{...uiStyle,width:"100%",display:"block",marginTop:4}}>
+          <option value="survival">Überlebensgewichtet</option><option value="equal">Normalwald-Prinzip (gleichmässig)</option>
+        </select>
+      </label>
+      <label style={{flex:"1 1 115px",fontSize:11,color:SAGE}}>Referenzalter
+        {sp&&kind==="species"?<div style={{fontSize:13,marginTop:10,color:PAPER}}>{refLife} Jahre (Art)</div>:
+          <select value={life} onChange={e=>setLife(Number(e.target.value))} style={{...uiStyle,width:"100%",display:"block",marginTop:4}}>
+            {[60,80,100,120,140,160,180].map(v=><option key={v} value={v}>{v} Jahre</option>)}
+          </select>}
+        {sp&&<label style={{fontSize:11,display:"block",marginTop:4}}><input type="checkbox" checked={kind==="species"} onChange={e=>setKind(e.target.checked?"species":"manual")}/> Artenlebensdauer</label>}
+      </label>
+    </div>
+    {!years? <div style={{background:"#fff8e6",border:`1px solid ${AMBER}55`,padding:"12px 14px",borderRadius:9,color:PAPER,fontSize:12,lineHeight:1.55}}>
+      Für <b>{sp?.label}</b> fehlen aktuell altersgenaue Baumkatasterdaten. Nur die Anzahl und das Durchschnittsalter sind bekannt; daraus lässt sich die heutige Altersstruktur nicht seriös ableiten.
+      <div style={{marginTop:8}}>Importiere unten den Baumkataster (CSV) oder eine vorbereitete <code>species_age_2026.json</code>. Danach wird die Projektion angezeigt.</div>
+    </div> : <>
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:10}}>
+        {[["Nähe 2026",now?.toFixed(1)+" %",SAGE],["Nähe "+yearAt(params.viewYearOff),future?.toFixed(1)+" %",PAPER],["Veränderung",`${direction>=0?"+":""}${direction.toFixed(1)} Punkte`,direction>=0?GREEN:BRICK]].map(([name,v,col])=><div key={name} style={{flex:"1 1 120px",padding:"10px 12px",border:`1px solid ${LINE_GRID}`,borderRadius:9,background:CARD}}><div style={{fontSize:11,color:SAGE}}>{name}</div><div style={{fontSize:19,fontWeight:700,color:col}}>{v}</div></div>)}
+      </div>
+      <ResponsiveContainer width="100%" height={330}>
+        <ComposedChart data={chart} margin={{top:12,right:12,left:0,bottom:3}}>
+          <CartesianGrid stroke={LINE_GRID} strokeDasharray="2 4" vertical={false}/>
+          <XAxis dataKey="klasse" interval={1} angle={-45} textAnchor="end" height={62} tick={{fill:TEXT_MUTE,fontSize:10}}/>
+          <YAxis tickFormatter={n=>n+" %"} tick={{fill:TEXT_MUTE,fontSize:11}} width={48}/>
+          <Tooltip formatter={(v,name)=>[`${Number(v).toFixed(1)} %`,name]} contentStyle={{background:"#fff",border:`1px solid ${LINE_GRID}`}}/>
+          <Bar dataKey="2026" name="Ist 2026" fill={BARK} barSize={8} isAnimationActive={false}/>
+          <Bar dataKey="Zieljahr" name={`Modell ${yearAt(params.viewYearOff)}`} fill={MOSS} barSize={8} isAnimationActive={false}/>
+          <Line dataKey="Referenz" name="Ideal-Referenz" stroke={GREEN} strokeDasharray="7 4" strokeWidth={2.8} dot={false} isAnimationActive={false}/>
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div style={{fontSize:12,fontWeight:600,color:SAGE,margin:"12px 0 5px"}}>Annäherung an die Referenz über die Zeit</div>
+      <ResponsiveContainer width="100%" height={160}>
+        <ComposedChart data={timeline} margin={{top:4,right:14,left:0,bottom:4}}>
+          <CartesianGrid stroke={LINE_GRID} strokeDasharray="2 4" vertical={false}/>
+          <XAxis dataKey="jahr" ticks={[2026,2051,2076,2101,2126]} tick={{fill:TEXT_MUTE,fontSize:10}}/>
+          <YAxis domain={[0,100]} tickFormatter={n=>n+" %"} width={44} tick={{fill:TEXT_MUTE,fontSize:10}}/>
+          <Tooltip formatter={v=>`${Number(v).toFixed(1)} %`} contentStyle={{background:"#fff",border:`1px solid ${LINE_GRID}`}}/>
+          <Line dataKey="naehe" name="Referenznähe" stroke={GREEN} strokeWidth={2} dot={false} isAnimationActive={false}/>
+          <ReferenceLine x={yearAt(params.viewYearOff)} stroke={MOSS} strokeDasharray="4 3"/>
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div style={{fontSize:12,color:direction>=0?GREEN:BRICK,fontWeight:600,marginTop:6}}>{direction>0.25?"Der Altersaufbau bewegt sich im Szenario näher an das Zielbild.":direction<-.25?"Der Altersaufbau entfernt sich im Szenario vom Zielbild.":"Der Altersaufbau bleibt etwa gleich weit vom Zielbild entfernt."}</div>
+    </>}
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginTop:15}}>
+      <label style={{...uiStyle,cursor:"pointer"}}>Kataster-CSV oder Altersprofil-JSON einlesen<input type="file" accept=".csv,.json" onChange={onUpload} style={{display:"none"}}/></label>
+      {cohorts&&<button onClick={()=>downloadAgeJSON(cohorts)} style={{...uiStyle,cursor:"pointer"}}>Altersprofil-JSON speichern</button>}
+      {cohorts&&<span style={{fontSize:11,color:TEXT_MUTE}}>{fmt(cohorts.totalWithAge||0)} Katasterbäume mit gültigem Alter</span>}
+    </div>
+    <div style={{fontSize:11,color:TEXT_MUTE,marginTop:12,lineHeight:1.6}}>
+      <b>Methodik:</b> Die vom forstlichen Normalwald-Prinzip abgeleitete Linie überträgt gleiche Flächenanteile der Altersklassen vereinfacht auf Baumzahlen und verteilt die Altersjahre bis zum Referenzalter gleichmässig. Die überlebensgewichtete Referenz nimmt gleichmässige jährliche Pflanzkohorten und altersabhängige Ausfälle an; sie ist eine illustrative stadtbaumspezifische Zielgrösse, <b>kein behördlich festgelegter Sollwert</b>. Referenznähe: 100 % = identische prozentuale Altersverteilung, 0 % = vollständig unterschiedlich. Baumarten-Projektionen verteilen die jährlichen Artenzu- und -abgänge der vereinfachten Dashboard-Rechnung auf Alterskohorten; sie sind <b>noch keine validierten artspezifischen Python-Modellläufe</b>.
+    </div>
+  </div>);
 }
 
 function SpeciesPanel({species,year}){
@@ -5127,14 +5369,153 @@ function SpeciesPanel({species,year}){
 }
 
 
+function avgDeathsUntil(det,horizon){
+  const h=Math.max(1,Math.min(YEARS,Math.round(horizon)));
+  let s=0; for(let t=1;t<=h;t++) s+=(det.deaths[t]||0);
+  return s/h;
+}
+function modelPlantingUntil(p,det,horizon){
+  const h=Math.max(1,Math.min(YEARS,Math.round(horizon)));
+  let repl=0,extra=0;
+  for(let t=1;t<=h;t++){
+    if(t-p.replacementDelay>=1) repl += p.replacementRate*(det.deaths[t-p.replacementDelay]||0);
+    if(t>=p.newStart && t<=p.newEnd) extra += p.annualNewTrees;
+  }
+  return {replacementAvg:repl/h,extraAvg:extra/h,totalAvg:(repl+extra)/h};
+}
+function calcPlantingNeed(p,det,horizon){
+  const h=Math.max(1,Math.min(YEARS,Math.round(horizon)));
+  const est=Math.max(0.5,Math.min(1,Number(p.establishmentRate)||0.85));
+  const current=det.total?.[0] ?? p.N0;
+  const goalOff=Math.max(1,Math.min(YEARS,Math.round(p.plantGoalYearOff||h)));
+  const goal=Number(p.plantGoalCount)||current;
+  const target=current+(goal-current)*Math.min(h/goalOff,1);
+  const avgDeaths=avgDeathsUntil(det,h);
+  const maintain=avgDeaths/est;
+  const build=Math.max(0,(target-current)/h)/est;
+  const total=maintain+build;
+  const planned=Number(p.plannedPlantingAnnual)||0;
+  const model=modelPlantingUntil(p,det,h);
+  const establishedPlanned=planned*est;
+  const netEstablishedPerYear=establishedPlanned-avgDeaths;
+  const gap=planned-total;
+  let status={label:"Pflanzleistung reicht",color:GREEN,note:"Erhalt und Zielbestand sind mit der geplanten Pflanzleistung plausibel erreichbar."};
+  if(planned<maintain) status={label:"Zu wenig für Erhalt",color:BRICK,note:"Die geplante Pflanzleistung reicht nicht, um die erwarteten Ausfälle langfristig zu kompensieren."};
+  else if(planned<total) status={label:"Erhalt ja, Ausbau nein",color:AMBER,note:"Der heutige Bestand kann ungefähr gehalten werden, der Zielbestand wird aber voraussichtlich nicht erreicht."};
+  return {horizon:h,year:yearAt(h),current,target,goal,est,avgDeaths,maintain,build,total,planned,model,establishedPlanned,netEstablishedPerYear,gap,status};
+}
+
+function PlantingNeedPanel({p,set,det,series}){
+  const main=calcPlantingNeed(p,det,p.plantGoalYearOff);
+  const horizons=[4,24,49,74,100];
+  const chart=horizons.map(h=>{const n=calcPlantingNeed(p,det,h);return {jahr:String(n.year),erhalt:Math.round(n.maintain),aufbau:Math.round(n.build),gesamt:Math.round(n.total),geplant:Math.round(p.plannedPlantingAnnual),modell:Math.round(n.model.totalAvg)};});
+  const finalPt=series[Math.min(YEARS,main.horizon)];
+  const forecastGap=finalPt ? finalPt.p50-main.target : 0;
+  const cards=[
+    ["Erhaltungsbedarf",fmt(main.maintain)+" / Jahr",PAPER,"Pflanzungen, die nötig sind, um erwartete Ausfälle zu ersetzen"],
+    ["Aufbaubedarf",fmt(main.build)+" / Jahr",MOSS,"zusätzliche Pflanzungen für den Zielbestand"],
+    ["Gesamtbedarf",fmt(main.total)+" / Jahr",main.status.color,"Erhaltungsbedarf + Aufbaubedarf"],
+    ["Pflanzlücke",(main.gap>=0?"+":"")+fmt(main.gap)+" / Jahr",main.gap>=0?GREEN:BRICK,"geplante Pflanzleistung minus Gesamtbedarf"],
+    ["Modellpflanzungen",fmt(main.model.totalAvg)+" / Jahr",SAGE,"Durchschnitt aus Ersatzpflanzungen und Zusatzpflanzungen der aktuellen Regler"],
+  ];
+  return(<>
+    <div style={{background:CARD,border:`1px solid ${main.status.color}66`,borderRadius:16,padding:"18px 18px 16px",marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:10}}>
+        <div style={{width:14,height:14,borderRadius:99,background:main.status.color,boxShadow:`0 0 14px ${main.status.color}`}}/>
+        <div>
+          <div style={{fontFamily:"var(--display)",fontSize:25,fontWeight:750,color:main.status.color,lineHeight:1.1}}>{main.status.label}</div>
+          <div style={{fontSize:12,color:TEXT_MUTE,marginTop:3,lineHeight:1.45}}>{main.status.note}</div>
+        </div>
+      </div>
+      <div style={{fontSize:14,color:PAPER,lineHeight:1.55,maxWidth:900}}>
+        Für einen Zielbestand von <b>{fmt(main.target)}</b> Bäumen bis <b>{main.year}</b> braucht es unter den aktuellen Annahmen rund <b style={{color:main.status.color}}>{fmt(main.total)} Pflanzungen pro Jahr</b>. Davon dienen etwa <b>{fmt(main.maintain)}</b> dem Erhalt und <b>{fmt(main.build)}</b> dem Aufbau. Bei <b>{Math.round(main.est*100)} %</b> Anwuchsquote ergeben {fmt(main.planned)} geplante Pflanzungen/Jahr netto rund <b>{fmt(main.establishedPlanned)}</b> etablierte Bäume/Jahr.
+      </div>
+    </div>
+
+    <div style={{background:PANEL,border:`1px solid ${LINE_GRID}`,borderRadius:16,padding:"16px 14px 8px",marginBottom:14}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:14,padding:"2px 4px 8px"}}>
+        <div>
+          <Segmented label="Zieljahr" value={p.plantGoalYearOff} options={[{value:4,label:"2030"},{value:24,label:"2050"},{value:49,label:"2075"},{value:74,label:"2100"},{value:100,label:"2126"}]} onChange={v=>set("plantGoalYearOff")(parseInt(v,10))}/>
+        </div>
+        <div>
+          <Slider label="Zielbestand im Zieljahr" value={p.plantGoalCount} min={14000} max={26000} step={250} onChange={set("plantGoalCount")} display={fmt(p.plantGoalCount)} hint="Zielgrösse für die Pflanzbedarfsrechnung"/>
+        </div>
+        <div>
+          <Slider label="Anwuchsquote / Etablierungsrate" value={p.establishmentRate} min={0.6} max={1} step={0.05} onChange={set("establishmentRate")} display={Math.round(p.establishmentRate*100)+" %"} hint="Anteil der Pflanzungen, der langfristig als Baum erhalten bleibt"/>
+        </div>
+        <div>
+          <Slider label="Geplante Gesamtpflanzungen / Jahr" value={p.plannedPlantingAnnual} min={0} max={1200} step={25} onChange={set("plannedPlantingAnnual")} display={fmt(p.plannedPlantingAnnual)} hint="Vergleichswert für Budget/Planung; ändert die Modellkurve nicht direkt"/>
+        </div>
+      </div>
+    </div>
+
+    <div className="flex" style={{gap:12,marginBottom:14,flexWrap:"wrap"}}>
+      {cards.map(([l,val,c,h])=>(
+        <div key={l} style={{background:CARD,border:`1px solid ${LINE_GRID}`,borderRadius:12,padding:"12px 15px",flex:"1 1 0",minWidth:145}}>
+          <div style={{fontSize:11,color:TEXT_MUTE}}>{l}</div>
+          <div style={{fontFamily:"var(--display)",fontSize:24,fontWeight:600,color:c,fontVariantNumeric:"tabular-nums"}}>{val}</div>
+          <div style={{fontSize:10.5,color:TEXT_MUTE,lineHeight:1.3,marginTop:4}}>{h}</div>
+        </div>
+      ))}
+    </div>
+
+    <div style={{background:PANEL,border:`1px solid ${LINE_GRID}`,borderRadius:16,padding:"16px 14px 8px",marginBottom:14}}>
+      <div style={{fontSize:13,color:SAGE,fontWeight:600,padding:"0 8px 8px"}}>Benötigte Pflanzungen pro Jahr je Zielhorizont</div>
+      <ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={chart} margin={{top:10,right:20,bottom:8,left:12}}>
+          <CartesianGrid stroke={LINE_GRID} strokeDasharray="2 4" vertical={false}/>
+          <XAxis dataKey="jahr" tick={{fill:TEXT_MUTE,fontSize:11,fontFamily:"var(--mono)"}} stroke={LINE_GRID}/>
+          <YAxis tick={{fill:TEXT_MUTE,fontSize:11,fontFamily:"var(--mono)"}} stroke={LINE_GRID} width={48}/>
+          <Tooltip contentStyle={{background:"#fff",border:`1px solid ${LINE_GRID}`,borderRadius:9,fontFamily:"var(--mono)",fontSize:12}} formatter={(value,name)=>[fmt(value),name]}/>
+          <Bar dataKey="erhalt" name="Erhaltungsbedarf" stackId="bedarf" fill={BARK} radius={[0,0,4,4]} isAnimationActive={false}/>
+          <Bar dataKey="aufbau" name="Aufbaubedarf" stackId="bedarf" fill={MOSS} radius={[4,4,0,0]} isAnimationActive={false}/>
+          <Line type="monotone" dataKey="geplant" name="geplant/Jahr" stroke={GREEN} strokeWidth={2.2} dot={false} isAnimationActive={false}/>
+          <Line type="monotone" dataKey="modell" name="aktuelles Modell/Jahr" stroke={AMBER} strokeWidth={1.8} strokeDasharray="5 4" dot={false} isAnimationActive={false}/>
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div style={{fontSize:11,color:TEXT_MUTE,lineHeight:1.5,padding:"2px 8px 8px"}}>Grauer Balken = Ersatz für erwartete Ausfälle. Roter Balken = zusätzlicher Aufbau bis zum Zielbestand. Grüne Linie = frei eingestellte geplante Gesamtpflanzungen/Jahr. Gelbe Linie = durchschnittliche Pflanzungen, die aus den aktuellen Modellreglern entstehen.</div>
+    </div>
+
+    <div style={{background:CARD,border:`1px solid ${LINE_GRID}`,borderRadius:12,padding:"14px 18px"}}>
+      <div style={{fontSize:13,color:SAGE,fontWeight:600,marginBottom:8}}>Lesart für Nicht-Fachpersonen</div>
+      <div style={{fontSize:13,color:PAPER,lineHeight:1.55}}>
+        Der Bestand bleibt nur stabil, wenn die jährlich ausfallenden Bäume nicht nur ersetzt, sondern erfolgreich etabliert werden. Bei {Math.round(main.est*100)} % Anwuchsquote müssen für 100 langfristig erhaltene Bäume rund {fmt(100/main.est)} Bäume gepflanzt werden. Für das Zieljahr {main.year} liegt die aktuelle Pflanzlücke bei <b style={{color:main.gap>=0?GREEN:BRICK}}>{main.gap>=0?"+":""}{fmt(main.gap)} Bäumen pro Jahr</b>. Die Bestandskurve im Modell liegt im Median im Zieljahr um <b style={{color:forecastGap>=0?GREEN:BRICK}}>{forecastGap>=0?"+":""}{fmt(forecastGap)}</b> Bäume gegenüber dem eingestellten Zielwert.
+      </div>
+    </div>
+  </>);
+}
+
+
 export default function App(){
   const exportRef = useRef(null);
   const [p,setP]=useState(DEFAULTS);
   const [view,setView]=useState("stock");
+  const [ageCohorts,setAgeCohorts]=useState(null);
+  useEffect(()=>{
+    // Optionaler vorbereiteter Auszug aus dem Baumkataster: /public/species_age_2026.json
+    let alive=true;
+    fetch(`${import.meta.env.BASE_URL}species_age_2026.json`).then(async r=>{
+      if(!r.ok||!(r.headers.get("content-type")||"").includes("json"))return null;
+      return r.json();
+    }).then(v=>{if(alive&&v?.species)setAgeCohorts(v);}).catch(()=>{});
+    return ()=>{alive=false;};
+  },[]);
+  async function readAgeCohorts(e){
+    const file=e.target.files?.[0];if(!file)return;
+    try{
+      const text=await file.text();
+      const value=file.name.toLowerCase().endsWith(".json")?JSON.parse(text):parseRawTreeCSV(text);
+      if(!value?.species||!Object.keys(value.species).length)throw Error("Keine Altersprofile gefunden.");
+      setAgeCohorts(value);
+      if(value.totalWithAge&&Math.abs(value.totalWithAge-START_ACTIVE)>START_ACTIVE*.1)
+        alert(`Import erfolgreich, aber ${value.totalWithAge} gültige Bäume statt rund ${START_ACTIVE}. Bitte Status und Pflanzjahre des Katasterexports prüfen.`);
+    }catch(err){alert("Altersprofile konnten nicht importiert werden: "+err.message);}
+    e.target.value="";
+  }
   const set=k=>v=>setP(s=>({...s,[k]:v}));
   const preset=n=>setP(s=>({...s,...PRESETS[n]}));
   const {series,det}=useMemo(()=>simulate(p),[p]);
-  const yMax=useMemo(()=>Math.max(p.targetCount,...series.map(d=>d.p95))*1.06,[series,p.targetCount]);
+  const yMax=useMemo(()=>Math.max(p.targetCount,p.plantGoalCount,...series.map(d=>d.p95))*1.06,[series,p.targetCount,p.plantGoalCount]);
   const ms=MILESTONES.map(off=>({off,pt:series[off]}));
   const t2030=series[4],v=verdict(t2030,p.targetCount),endPt=series[YEARS];
   const trendEnd=p.climateTrendEnd;
@@ -5176,6 +5557,7 @@ export default function App(){
         p95: series[off].p95,
       })),
       currentVerdict: v,
+      plantingNeed: calcPlantingNeed(p, det, p.plantGoalYearOff),
       speciesDataset: SPECIES_DATASET,
       speciesTop: species.rows,
     };
@@ -5221,17 +5603,19 @@ export default function App(){
           <div style={{fontSize:11,letterSpacing:2.5,textTransform:"uppercase",color:MOSS_DIM,fontWeight:700}}>Stadt Winterthur · Stadtbaum-Modell v7</div>
         </div>
         <h1 style={{fontFamily:"var(--display)",fontSize:"clamp(28px,4.4vw,52px)",fontWeight:800,lineHeight:1.0,margin:"0 0 8px",letterSpacing:-1.2}}>
-          {view==="stock"?"Wie entwickelt sich der Baumbestand?":view==="demography"?"Wie verschiebt sich die Altersstruktur?":"Wie verändert sich die Baumartenzusammensetzung?"}</h1>
+          {view==="stock"?"Wie entwickelt sich der Baumbestand?":view==="demography"?"Wie verschiebt sich die Altersstruktur?":view==="species"?"Wie verändert sich die Baumartenzusammensetzung?":"Wie viele Bäume müssen gepflanzt werden?"}</h1>
         <div style={{width:48,height:3,background:MOSS,marginBottom:10}}/>
         <p style={{color:TEXT_MUTE,maxWidth:680,fontSize:14,lineHeight:1.5}}>
           {view==="stock"
             ?`Basis-Ausfall = kalibrierte Alters-Hazard aus dem Kataster (≈135 Fällungen/Jahr im Ist-Zustand). Ziel ${fmt(p.targetCount)} bis 2030.`
             :view==="demography"
               ?"Echte Altersverteilung aus den Pflanzjahren, fortgeschrieben mit der kalibrierten Alters-Hazard. Neue Bäume starten mit Alter "+p.initAge+"."
-              :"Katasterbasierte Baumarten-/Artengruppen-Ansicht mit aktuellen Anteilen, mittlerem Alter, historischen Fällungen und Lebensdauer-Bandbreiten."}</p></div>
+              :view==="species"
+                ?"Katasterbasierte Baumarten-/Artengruppen-Ansicht mit aktuellen Anteilen, mittlerem Alter, historischen Fällungen und Lebensdauer-Bandbreiten."
+                :"Pflanzbedarf als einfache Erhaltungs- und Aufbau-Rechnung: erwartete Ausfälle, Anwuchsquote, Zielbestand und Pflanzlücke."}</p></div>
 
       <div className="flex" style={{gap:8,marginBottom:18,alignItems:"center",flexWrap:"wrap"}}>
-        {[["stock","Bestand"],["demography","Demografie"],["species","Baumarten"]].map(([id,lab])=>(
+        {[["stock","Bestand"],["demography","Demografie"],["species","Baumarten"],["planting","Pflanzbedarf"]].map(([id,lab])=>(
           <button key={id} onClick={()=>setView(id)} style={{fontSize:13,padding:"9px 18px",borderRadius:9,cursor:"pointer",fontWeight:600,
             border:`1px solid ${view===id?MOSS:LINE_GRID}`,background:view===id?"rgba(225,0,15,0.07)":"transparent",color:view===id?MOSS:SAGE}}>{lab}</button>))}
         <div style={{flex:1}}/>
@@ -5293,6 +5677,7 @@ export default function App(){
                   <div style={{fontFamily:"var(--display)",fontSize:34,fontWeight:600,color:PAPER,lineHeight:1}}>{yearAt(yOff)}</div></div></div>
               <input type="range" min={0} max={YEARS} step={1} value={yOff} onChange={e=>set("viewYearOff")(parseInt(e.target.value))} style={{width:"100%",accentColor:MOSS,height:4,cursor:"pointer",marginBottom:18}}/>
               <Pyramid classOld={det.classOld[yOff]} classNew={det.classNew[yOff]}/></div>
+            <AgeReferencePanel params={p} det={det} forecast={species} cohorts={ageCohorts} onUpload={readAgeCohorts}/>
             <div className="flex" style={{gap:12,marginTop:14,flexWrap:"wrap"}}>
               {[["Gesamtbestand",fmt(det.total[yOff]),PAPER],["Medianalter",det.medAge[yOff]+" J",MOSS],
                 ["Anteil < 20 J",Math.round(det.young[yOff]*100)+" %",SAGE],["Anteil ≥ 60 J",Math.round(det.old60[yOff]*100)+" %",AMBER],
@@ -5316,6 +5701,7 @@ export default function App(){
                 </ComposedChart></ResponsiveContainer></div>
           </>)}
           {view==="species"&&(<SpeciesPanel species={species} year={yearAt(yOff)}/>) }
+          {view==="planting"&&(<PlantingNeedPanel p={p} set={set} det={det} series={series}/>) }
         </div>
 
         <div style={{background:PANEL,border:`1px solid ${LINE_GRID}`,borderRadius:16,padding:"20px 20px 8px"}}>
