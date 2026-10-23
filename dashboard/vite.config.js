@@ -1,8 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// GitHub Pages: https://forstsam.github.io/Baumversorgung-Winterthur/
+// https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/Baumversorgung-Winterthur/',
 })
