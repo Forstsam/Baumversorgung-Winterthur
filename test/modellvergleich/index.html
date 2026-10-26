@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="de-CH"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stadtbaum Winterthur – v7 Modellvergleich (Test)</title>
+<style>
+:root{color-scheme:light;--red:#df0012;--muted:#7b776c;--bg:#ece9e2;--ink:#25241f;--line:#dedbd2;--green:#247448}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}main{max-width:1130px;margin:auto;padding:40px 18px 90px}
+h1{font-size:clamp(27px,4vw,42px);line-height:1.14;letter-spacing:-1px;margin:8px 0 12px}.kicker{font-size:11px;color:#d00013;letter-spacing:2px;font-weight:800;text-transform:uppercase}.sub{max-width:850px;color:#777166;margin-bottom:22px}.panel{background:#fff;border-radius:14px;padding:23px;margin:17px 0;box-shadow:0 1px 1px #00000013;border:1px solid #e6e0d6}.alert{background:#fff7ec;border:1px solid #d8bb7d;padding:13px;border-radius:9px;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}.metric{background:#faf9f6;padding:13px;border-radius:10px}.metric small{color:var(--muted);display:block}.metric strong{font-size:23px}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}input[type=range]{width:100%;accent-color:var(--red)}select{border:1px solid #cfcac1;border-radius:7px;padding:8px;font:inherit;background:#fff;max-width:100%}svg{width:100%;height:auto}text{font-family:inherit}.notes{font-size:12px;color:var(--muted)}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid var(--line);text-align:left;padding:9px 5px}th{color:var(--muted);font-size:12px}td:last-child{text-align:right}code{font-size:.92em;background:#f3f2ed;padding:2px 5px;border-radius:4px}
+</style></head><body><main>
+<div class="kicker">Stadt Winterthur · Stadtbaum-Modell · Entwicklungsfassung</div><h1>Python-Modellvergleich</h1>
+<p class="sub">Ansicht ausschliesslich auf Grundlage exportierter v7-Modellergebnisse. Keine eigenständige Browser-Ausfallberechnung. Fehlende Art-Jahre werden nicht erfunden oder interpoliert.</p>
+<div id="message" class="alert">Versuche <code>ergebnisse.json</code> zu laden. Falls noch nicht vorhanden, zeigt diese Ansicht keine fiktiven Modelldaten.</div>
+<div id="model" hidden>
+<div class="panel"><div class="row"><h2>Bestandsentwicklung</h2><span id="scenario"></span></div><svg id="chart" viewBox="0 0 870 286" role="img" aria-label="Zeitreihe Median und 5 bis 95 Perzentil"></svg><div class="row"><label for="year">Betrachtungsjahr <strong id="yearLabel"></strong></label><small id="bandLabel"></small></div><input id="year" type="range" step="1"><div class="grid" id="metrics"></div></div>
+<div class="panel"><h2>Entwicklung nach Baumart</h2><p class="notes">Das Python-Modell protokolliert Baumarten nicht zwingend jedes Jahr. Es werden nur echte berechnete Stützjahre angezeigt.</p><select id="speciesSelect"></select><table><thead><tr><th>Jahr</th><th>Median</th><th>5–95 %-Bereich</th></tr></thead><tbody id="speciesRows"></tbody></table></div>
+<div class="panel"><h2>Methodische Einordnung</h2><p>Die Simulation ist ein **Szenariomodell** und noch kein historisch validiertes Prognosemodell. Unsicherheitsintervalle stammen aus dem Python-Modell und hängen von dessen Parametern, Datengrundlagen und Monte-Carlo-Läufen ab. Ein SSPSzenario beschreibt nicht automatisch tatsächliche Mortalitätsunterschiede.</p><p class="notes">Datenstand und genutzte Klimaquellen sind in der effektiven Python-Konfiguration zu prüfen. Nicht genehmigte Betriebsdaten nicht auf GitHub Pages veröffentlichen.</p></div>
+</div>
+</main><script>
+const $=id=>document.getElementById(id), fmt=n=>Number.isFinite(Number(n))?Math.round(Number(n)).toLocaleString('de-CH'):'–';
+let DATA=null;
+function svg(tag,attrs={}){let e=document.createElementNS('http://www.w3.org/2000/svg',tag);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,String(v)));return e}
+function draw(year){let rows=DATA.total.filter(x=>Number.isFinite(x.p50));if(!rows.length)return;let minY=Math.min(...rows.map(x=>x.year)),maxY=Math.max(...rows.map(x=>x.year)),maxV=Math.max(...rows.map(x=>x.p95||x.p50))*1.12;let W=840,H=236,ox=18,oy=13;
+ const X=x=>ox+(x-minY)/(Math.max(1,maxY-minY))*W, Y=v=>oy+H-(v/maxV)*H;
+ let el=$('chart');el.replaceChildren();
+ for(let i=0;i<5;i++){let v=i*maxV/4;el.append(svg('line',{x1:ox,y1:Y(v),x2:ox+W,y2:Y(v),stroke:'#e5e2db','stroke-dasharray':'3 5'}));let t=svg('text',{x:ox+4,y:Y(v)-3,'font-size':11,fill:'#837e72'});t.textContent=fmt(v);el.append(t)}
+ let points=rows.map(r=>[X(r.year),Y(r.p95||r.p50),Y(r.p05||r.p50)]);let area=svg('path',{d:'M'+points.map(p=>p[0]+','+p[1]).join(' L')+' L'+points.slice().reverse().map(p=>p[0]+','+p[2]).join(' L')+' Z',fill:'#ef9e9e','fill-opacity':.24});el.append(area);
+ let line=svg('path',{d:'M'+rows.map(r=>X(r.year)+','+Y(r.p50)).join(' L'),fill:'none',stroke:'#de0011','stroke-width':3});el.append(line);
+ let row=rows.find(x=>x.year===year)||rows[0];let xx=X(row.year),yy=Y(row.p50);el.append(svg('line',{x1:xx,y1:oy,x2:xx,y2:oy+H,stroke:'#69665f','stroke-dasharray':'4 4'}));el.append(svg('circle',{cx:xx,cy:yy,r:6,fill:'#d50012',stroke:'#fff','stroke-width':2}));
+ for(let yr of [minY,Math.round((minY+maxY)/2),maxY]){let t=svg('text',{x:X(yr),y:280,'text-anchor':'middle','font-size':12,fill:'#837e72'});t.textContent=yr;el.append(t)}
+ $('yearLabel').textContent=row.year;$('bandLabel').textContent='Median ± Unsicherheitsband';let metrics=[['Median',fmt(row.p50)],['5 %-Perzentil',fmt(row.p05)],['95 %-Perzentil',fmt(row.p95)]];
+ const a=DATA.annual.find(x=>x.year===row.year);if(a){metrics.push(['Ausfälle/Jahr Ø',fmt(a.deaths_mean)],['Ersatz geplant Ø',fmt(a.replacements_scheduled_mean)],['Zusatzpflanzungen Ø',fmt(a.additional_new_trees_mean)])}
+ if(Number.isFinite(DATA.target_count))metrics.push(['Ziel',fmt(DATA.target_count)]);
+ $('metrics').replaceChildren(...metrics.map(([name,v])=>{let el=document.createElement('div');el.className='metric';let sm=document.createElement('small');sm.textContent=name;let st=document.createElement('strong');st.textContent=v;el.append(sm,st);return el}));
+}
+function speciesRows(){let s=$('speciesSelect').value;let arr=DATA.species.filter(x=>x.species===s).sort((a,b)=>a.year-b.year);let body=$('speciesRows');body.replaceChildren(...arr.map(x=>{let tr=document.createElement('tr');[String(x.year),fmt(x.p50),fmt(x.p05)+'–'+fmt(x.p95)].forEach(v=>{let td=document.createElement('td');td.textContent=v;tr.append(td)});return tr}))}
+async function init(){try{let res=await fetch('./ergebnisse.json',{cache:'no-store'});if(!res.ok)throw Error('Noch keine ergebnisse.json vorhanden (HTTP '+res.status+').');let d=await res.json();if(!Array.isArray(d.total)||!d.total.length||!Array.isArray(d.species))throw Error('Unvollständiges Exportformat.');DATA=d;let years=d.total.map(r=>r.year);$('year').min=Math.min(...years);$('year').max=Math.max(...years);$('year').value=Math.min(2050,Math.max(...years));$('scenario').textContent=d.scenario_label+(d.n_runs?' · '+d.n_runs+' Läufe':'');$('year').addEventListener('input',()=>draw(Number($('year').value)));
+ const species=[...new Set(d.species.map(s=>s.species))].sort((a,b)=>a.localeCompare(b,'de'));let sel=$('speciesSelect');species.forEach(s=>{let o=document.createElement('option');o.value=s;o.textContent=s;sel.append(o)});sel.addEventListener('change',speciesRows);draw(Number($('year').value));speciesRows();$('model').hidden=false;$('message').textContent=d.validation_status||'Modellresultate geladen; Validierungsstatus nicht angegeben.';
+}catch(e){$('message').textContent='Keine Modellresultate geladen: '+e.message+' Zum lokalen Test zuerst Python-v7 ausfuehren und JSON mit pruefung/export_v7_dashboard.py exportieren.';}}
+init();
+</script></body></html>
