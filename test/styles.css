@@ -72,3 +72,10 @@
 .two-one > *, .twocol > *, .tabbody, .normalPlot, .deficitCard{min-width:0;max-width:100%}
 .normalPlot{width:100%;overflow-x:auto}
 @media(max-width:790px){.two-one{grid-template-columns:minmax(0,1fr)}.deficitRow,.deficitTableHead{max-width:100%;min-width:0}}
+
+/* v8.3: Schnellwahl und sichtbarer Fernprognose-Hinweis */
+.yearJumps{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+.yearJumps .jumpLabel{font-size:12px;color:#79746e;margin-right:2px}
+.yearJumps button{border:1px solid #d9d6d0;background:#fff;color:#333;border-radius:9px;padding:7px 12px;font:inherit;font-size:12px;cursor:pointer}
+.yearJumps button:hover,.yearJumps button:focus-visible{border-color:#e1000f;color:#b0101a;outline-offset:2px}
+.longRangeNote{background:#fff8ec;border-left:3px solid #c8860d;padding:9px 13px;color:#645343;font-size:12px;line-height:1.5;margin-top:14px;border-radius:3px}
